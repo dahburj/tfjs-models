@@ -160,6 +160,24 @@ textarea {
 
 .transfer-word {
   display: flex;
-  width: 330px;
-  justify-content: space-between;
+  width: 100%;
+  justify-content: left;
+  vertical-align: middle;
+  text-align: center;
+}
+
+.eval-results {
+  font-size: 17px;
+}
+
+input[type=checkbox] {
+  transform: scale(2);
+}
+
+#include-audio-waveform {
+  margin-left: 20px;
+}
+
+#include-audio-waveform-label {
+  font-size: 17px;
 }

@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google LLC. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -127,6 +127,71 @@ export interface ExampleCollectionOptions {
    * Must be a number >=1.
    */
   durationMultiplier?: number;
+
+  /**
+   * Duration in seconds.
+   *
+   * Mutually exclusive with durationMultiplier.
+   * If specified, must be >0.
+   */
+  durationSec?: number;
+
+  /**
+   * Optional constraints for the audio track.
+   *
+   * E.g., this can be used to select a microphone when multiple microphones
+   * are available on the system: `{deviceId: 'deadbeef'}`.
+   */
+  audioTrackConstraints?: MediaTrackConstraints;
+
+  /**
+   * Optional snipppet duration in seconds.
+   *
+   * Must be supplied if `onSnippet` is specified.
+   */
+  snippetDurationSec?: number;
+
+  /**
+   * Optional snippet callback.
+   *
+   * Must be provided if `snippetDurationSec` is specified.
+   *
+   * Gets called every snippetDurationSec with a latest slice of the
+   * spectrogram. It is the spectrogram accumulated since the last invocation of
+   * the callback (or for the first time, since when `collectExample()` is
+   * started).
+   */
+  onSnippet?: (spectrogram: SpectrogramData) => Promise<void>;
+
+  /**
+   * Whether to collect the raw time-domain audio waveform in addition to the
+   * spectrogram.
+   *
+   * Default: `false`.
+   */
+  includeRawAudio?: boolean;
+}
+
+/**
+ * Metadata for a speech-comamnds recognizer.
+ */
+export interface SpeechCommandRecognizerMetadata {
+  /** Version of the speech-commands library. */
+  tfjsSpeechCommandsVersion: string;
+
+  /** Name of the model. */
+  modelName?: string;
+
+  /** A time stamp for when this metadata is generatd. */
+  timeStamp?: string;
+
+  /**
+   * Word labels for the recognizer model's output probability scores.
+   *
+   * The length of this array should be equal to the size of the last dimension
+   * of the model's output.
+   */
+  wordLabels: string[];
 }
 
 /**
@@ -185,12 +250,28 @@ export interface TransferSpeechCommandRecognizer extends
       Promise<tf.History|[tf.History, tf.History]>;
 
   /**
+   * Perform evaluation of the model using the examples that the model
+   * has loaded.
+   *
+   * The evaluation calcuates an ROC curve by lumping the non-background-noise
+   * classes into a positive category and treating the background-noise
+   * class as the negative category.
+   *
+   * @param config Configuration object for the evaluation.
+   * @returns A Promise of the result of evaluation.
+   */
+  evaluate(config: EvaluateConfig): Promise<EvaluateResult>;
+
+  /**
    * Get examples currently held by the transfer-learning recognizer.
    *
    * @param label Label requested.
    * @returns An array of `Example`s, along with their UIDs.
    */
   getExamples(label: string): Array<{uid: string, example: Example}>;
+
+  /** Set the key frame index of a given example. */
+  setExampleKeyFrameIndex(uid: string, keyFrameIndex: number): void;
 
   /**
    * Load an array of serialized examples.
@@ -201,10 +282,19 @@ export interface TransferSpeechCommandRecognizer extends
    */
   loadExamples(serialized: ArrayBuffer, clearExisting?: boolean): void;
 
-  /** Serialize the existing examples. */
-  serializeExamples(): ArrayBuffer;
+  /**
+   * Serialize the existing examples.
+   *
+   * @param wordLabels Optional word label(s) to serialize. If specified, only
+   *   the examples with labels matching the argument will be serialized. If
+   *   any specified word label does not exist in the vocabulary of this
+   *   transfer recognizer, an Error will be thrown.
+   * @returns An `ArrayBuffer` object amenable to transmission and storage.
+   */
+  serializeExamples(wordLabels?: string|string[]): ArrayBuffer;
 
-  /** Remove an example from the dataset of the transfer recognizer.
+  /**
+   * Remove an example from the dataset of the transfer recognizer.
    *
    * @param uid The UID for the example to be removed.
    */
@@ -234,7 +324,7 @@ export interface TransferSpeechCommandRecognizer extends
    * @returns A `Promise` of a `SaveResult` object that summarizes the
    *   saving result.
    */
-  save(handlerOrURL?: string | tf.io.IOHandler): Promise<tf.io.SaveResult>;
+  save(handlerOrURL?: string|tf.io.IOHandler): Promise<tf.io.SaveResult>;
 
   /**
    * Load the transfer-learned model.
@@ -252,7 +342,15 @@ export interface TransferSpeechCommandRecognizer extends
    *   to load the data from. E.g.,
    *   `tf.io.browserFiles([modelJSONFile, weightsFile])`
    */
-  load(handlerOrURL?: string | tf.io.IOHandler): Promise<void>;
+  load(handlerOrURL?: string|tf.io.IOHandler): Promise<void>;
+
+  /**
+   * Get metadata about the transfer recognizer.
+   *
+   * The metadata includes but is not limited to: speech-commands library
+   * version, word labels that correspond to the model's probability outputs.
+   */
+  getMetadata(): SpeechCommandRecognizerMetadata;
 }
 
 /**
@@ -272,6 +370,28 @@ export interface SpectrogramData {
    * Number of points per frame, i.e., FFT length per frame.
    */
   frameSize: number;
+
+  /**
+   * Duration of each frame in milliseconds.
+   */
+  frameDurationMillis?: number;
+
+  /**
+   * Index to the key frame (0-based).
+   *
+   * A key frame is a frame in the spectrogram that belongs to
+   * the utterance of interest. It is used to distinguish the
+   * utterance part from the background-noise part.
+   *
+   * A typical use of key frame index: when multiple training examples are
+   * extracted from a spectroram, every example is guaranteed to include
+   * the key frame.
+   *
+   * Key frame is not required. If it is missing, heuristics algorithms
+   * (e.g., finding the highest-intensity frame) can be used to calculate
+   * the key frame.
+   */
+  keyFrameIndex?: number;
 }
 
 /**
@@ -361,6 +481,14 @@ export interface StreamingRecognitionConfig {
    * Default: `false`.
    */
   includeEmbedding?: boolean;
+
+  /**
+   * Optional constraints for the audio track.
+   *
+   * E.g., this can be used to select a microphone when multiple microphones
+   * are available on the system: `{deviceId: 'deadbeef'}`.
+   */
+  audioTrackConstraints?: MediaTrackConstraints;
 }
 
 export interface RecognizeConfig {
@@ -380,13 +508,35 @@ export interface RecognizeConfig {
   includeEmbedding?: boolean;
 }
 
+export interface AudioDataAugmentationOptions {
+  /**
+   * Additive ratio for augmenting the data by mixing the word spectrograms
+   * with background-noise ones.
+   *
+   * If not `null` or `undefined`, will cause extra word spectrograms to be
+   * created through the equation:
+   *   (normalizedWordSpectrogram +
+   *    augmentByMixingNoiseRatio * normalizedNoiseSpectrogram)
+   *
+   * The normalizedNoiseSpectrogram will be drawn randomly from all noise
+   * snippets available. If no noise snippet is available, an Error will
+   * be thrown.
+   *
+   * Default: `undefined`.
+   */
+  augmentByMixingNoiseRatio?: number;
+
+  // TODO(cais): Add other augmentation options, including augmentByReverb,
+  // augmentByTempoShift and augmentByFrequencyShift.
+}
+
 /**
  * Configurations for the training of a transfer-learning recognizer.
  *
  * It is used during calls to the `TransferSpeechCommandRecognizer.train()`
  * method.
  */
-export interface TransferLearnConfig {
+export interface TransferLearnConfig extends AudioDataAugmentationOptions {
   /**
    * Number of training epochs (default: 20).
    */
@@ -442,7 +592,7 @@ export interface TransferLearnConfig {
    * tf.Callback to be used during the initial training (i.e., not
    * the fine-tuning phase).
    */
-  callback?: tf.CustomCallbackConfig;
+  callback?: tf.CustomCallbackArgs;
 
   /**
    * tf.Callback to be used durnig the fine-tuning phase.
@@ -450,7 +600,7 @@ export interface TransferLearnConfig {
    * This parameter is used only if `fineTuningEpochs` is specified
    * and is a positive integer.
    */
-  fineTuningCallback?: tf.CustomCallbackConfig;
+  fineTuningCallback?: tf.CustomCallbackArgs;
 
   /**
    * Ratio between the window hop and the window width.
@@ -465,81 +615,139 @@ export interface TransferLearnConfig {
    * a hop of Math.round(43 * 0.25) = 11 frames.
    */
   windowHopRatio?: number;
-}
-
-/**
- * Parameters for a speech-command recognizer.
- */
-export interface RecognizerParams {
-  /**
-   * Total duration per spectragram, in milliseconds.
-   */
-  spectrogramDurationMillis?: number;
 
   /**
-   * FFT encoding size per spectrogram column.
-   */
-  fftSize?: number;
-
-  /**
-   * Sampling rate, in Hz.
-   */
-  sampleRateHz?: number;
-}
-
-/**
- * Interface of an audio feature extractor.
- */
-export interface FeatureExtractor {
-  /**
-   * Config the feature extractor.
-   */
-  setConfig(params: RecognizerParams): void;
-
-  /**
-   * Start the feature extraction from the audio samples.
-   */
-  start(): Promise<Float32Array[]|void>;
-
-  /**
-   * Stop the feature extraction.
-   */
-  stop(): Promise<void>;
-
-  /**
-   * Get the extractor features collected since last call.
-   */
-  getFeatures(): Float32Array[];
-}
-
-/** Snippet of pulse-code modulation (PCM) audio data. */
-export interface RawAudioData {
-  /** Samples of the snippet. */
-  data: Float32Array;
-
-  /** Sampling rate, in Hz. */
-  sampleRateHz: number;
-}
-
-/**
- * A short, labeled snippet of speech or audio.
- *
- * This can be used for training a transfer model based on the base
- * speech-commands model, among other things.
- *
- * A set of `Example`s can make up a dataset.
- */
-export interface Example {
-  /** A label for the example. */
-  label: string;
-
-  /** Spectrogram data. */
-  spectrogram: SpectrogramData;
-
-  /**
-   * Raw audio in PCM (pulse-code modulation) format.
+   * The threshold for the total duration of the dataset above which
+   * `fitDataset()` will be used in lieu of `fit()`.
    *
-   * Optional.
+   * Default: 60e3 (1 minute).
    */
-  rawAudio?: RawAudioData;
+  fitDatasetDurationMillisThreshold?: number;
 }
+
+/**
+ * Type for a Receiver Operating Characteristics (ROC) curve.
+ */
+export type ROCCurve =
+    Array < {probThreshold?: number,   /** Probability threshold */
+                          fpr: number, /** False positive rate (FP / N) */
+                          tpr: number  /** True positive rate (TP / P) */
+  falsePositivesPerHour?: number  /** FPR converted to per hour rate */
+}>;
+
+  /**
+   * Model evaluation result.
+   */
+  export interface EvaluateResult {
+    /**
+     * ROC curve.
+     */
+    rocCurve?: ROCCurve;
+
+    /**
+     * Area under the (ROC) curve.
+     */
+    auc?: number;
+  }
+
+  /**
+   * Model evaluation configuration.
+   */
+  export interface EvaluateConfig {
+    /**
+     * Ratio between the window hop and the window width.
+     *
+     * Used during extraction of multiple spectrograms matching the underlying
+     * model's input shape from a longer spectroram.
+     *
+     * For example, if the spectrogram window accepted by the underlying model
+     * is 43 frames long, then the default windowHopRatio 0.25 will lead to
+     * a hop of Math.round(43 * 0.25) = 11 frames.
+     */
+    windowHopRatio: number;
+
+    /**
+     * Word probability score thresholds, used to calculate the ROC.
+     *
+     * E.g., [0, 0.2, 0.4, 0.6, 0.8, 1.0].
+     */
+    wordProbThresholds: number[];
+  }
+
+  /**
+   * Parameters for a speech-command recognizer.
+   */
+  export interface RecognizerParams {
+    /**
+     * Total duration per spectragram, in milliseconds.
+     */
+    spectrogramDurationMillis?: number;
+
+    /**
+     * FFT encoding size per spectrogram column.
+     */
+    fftSize?: number;
+
+    /**
+     * Sampling rate, in Hz.
+     */
+    sampleRateHz?: number;
+  }
+
+  /**
+   * Interface of an audio feature extractor.
+   */
+  export interface FeatureExtractor {
+    /**
+     * Config the feature extractor.
+     */
+    setConfig(params: RecognizerParams): void;
+
+    /**
+     * Start the feature extraction from the audio samples.
+     */
+    start(audioTrackConstraints?: MediaTrackConstraints):
+        Promise<Float32Array[]|void>;
+
+    /**
+     * Stop the feature extraction.
+     */
+    stop(): Promise<void>;
+
+    /**
+     * Get the extractor features collected since last call.
+     */
+    getFeatures(): Float32Array[];
+  }
+
+  /** Snippet of pulse-code modulation (PCM) audio data. */
+  export interface RawAudioData {
+    /** Samples of the snippet. */
+    data: Float32Array;
+
+    /** Sampling rate, in Hz. */
+    sampleRateHz: number;
+  }
+
+  /**
+   * A short, labeled snippet of speech or audio.
+   *
+   * This can be used for training a transfer model based on the base
+   * speech-commands model, among other things.
+   *
+   * A set of `Example`s can make up a dataset.
+   */
+  export interface Example {
+    /** A label for the example. */
+    label: string;
+
+    /** Spectrogram data. */
+    spectrogram: SpectrogramData;
+
+    /**
+     * Raw audio in PCM (pulse-code modulation) format.
+     *
+     * Optional.
+     */
+    rawAudio?: RawAudioData;
+  }

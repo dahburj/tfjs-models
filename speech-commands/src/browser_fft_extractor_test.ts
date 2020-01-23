@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google Inc. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -16,12 +16,13 @@
  */
 
 import * as tf from '@tensorflow/tfjs';
-import {describeWithFlags} from '@tensorflow/tfjs-core/dist/jasmine_util';
+import {describeWithFlags, NODE_ENVS} from '@tensorflow/tfjs-core/dist/jasmine_util';
 import {BrowserFftFeatureExtractor, flattenQueue, getInputTensorFromFrequencyData} from './browser_fft_extractor';
 import * as BrowserFftUtils from './browser_fft_utils';
 import {FakeAudioContext, FakeAudioMediaStream} from './browser_test_utils';
+import {expectTensorsClose} from './test_utils';
 
-const testEnvs = tf.test_util.NODE_ENVS;
+const testEnvs = NODE_ENVS;
 
 describeWithFlags('flattenQueue', testEnvs, () => {
   it('3 frames, 2 values each', () => {
@@ -47,7 +48,7 @@ describeWithFlags('getInputTensorFromFrequencyData', testEnvs, () => {
     const fftSize = 2;
     const tensor =
         getInputTensorFromFrequencyData(freqData, [1, numFrames, fftSize, 1]);
-    tf.test_util.expectArraysClose(tensor, tf.tensor4d(freqData, [1, 6, 2, 1]));
+    expectTensorsClose(tensor, tf.tensor4d(freqData, [1, 6, 2, 1]));
   });
 });
 
@@ -190,9 +191,8 @@ describeWithFlags('BrowserFftFeatureExtractor', testEnvs, () => {
         // Verify the correctness of the spectrogram data.
         for (let i = 0; i < xData.length; ++i) {
           const segment = Math.floor(i / columnTruncateLength);
-          const expected =
-            segment * 1024 + (i % columnTruncateLength) +
-            1024 * numFramesPerSpectrogram * numCallbacksCompleted;
+          const expected = segment * 1024 + (i % columnTruncateLength) +
+              1024 * numFramesPerSpectrogram * numCallbacksCompleted;
           expect(xData[i]).toEqual(expected);
         }
         if (++numCallbacksCompleted >= numCallbacksToComplete) {

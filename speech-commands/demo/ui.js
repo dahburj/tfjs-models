@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google Inc. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -68,7 +68,6 @@ export function hideCandidateWords() {
   candidateWordsContainer.classList.add('candidate-words-hidden');
 }
 
-
 /**
  * Show an audio spectrogram in a canvas.
  *
@@ -82,8 +81,11 @@ export function hideCandidateWords() {
  *   supported fields:
  *   - pixelsPerFrame {number} Number of pixels along the width dimension of
  *     the canvas for each frame of spectrogram.
- *   - markMaxIntensityFrame {bool} Whether to mark the index of the frame
- *     with the maximum intensity.
+ *   - maxPixelWidth {number} Maximum width in pixels.
+ *   - markKeyFrame {bool} Whether to mark the index of the frame
+ *     with the maximum intensity or a predetermined key frame.
+ *   - keyFrameIndex {index?} Predetermined key frame index.
+ *
  *   <= fftSize.
  */
 export async function plotSpectrogram(
@@ -118,7 +120,10 @@ export async function plotSpectrogram(
 
   const numFrames = frequencyData.length / fftSize;
   if (config.pixelsPerFrame != null) {
-    const realWidth = Math.round(config.pixelsPerFrame * numFrames);
+    let realWidth = Math.round(config.pixelsPerFrame * numFrames);
+    if (config.maxPixelWidth != null && realWidth > config.maxPixelWidth) {
+      realWidth = config.maxPixelWidth;
+    }
     canvas.width = realWidth;
   }
 
@@ -143,21 +148,22 @@ export async function plotSpectrogram(
     }
   }
 
-  if (config.markMaxIntensityFrame) {
-    const maxIntensityFrameIndex =
-        await SpeechCommands.getMaxIntensityFrameIndex({
-          data: frequencyData,
-          frameSize: fftSize
-        }).data();
+  if (config.markKeyFrame) {
+    const keyFrameIndex = config.keyFrameIndex == null ?
+        await SpeechCommands
+            .getMaxIntensityFrameIndex(
+                {data: frequencyData, frameSize: fftSize})
+            .data() :
+        config.keyFrameIndex;
     // Draw lines to mark the maximum-intensity frame.
     context.strokeStyle = 'black';
     context.beginPath();
-    context.moveTo(pixelWidth * maxIntensityFrameIndex, 0);
-    context.lineTo(pixelWidth * maxIntensityFrameIndex, canvas.height * 0.1);
+    context.moveTo(pixelWidth * keyFrameIndex, 0);
+    context.lineTo(pixelWidth * keyFrameIndex, canvas.height * 0.1);
     context.stroke();
     context.beginPath();
-    context.moveTo(pixelWidth * maxIntensityFrameIndex, canvas.height * 0.9);
-    context.lineTo(pixelWidth * maxIntensityFrameIndex, canvas.height);
+    context.moveTo(pixelWidth * keyFrameIndex, canvas.height * 0.9);
+    context.lineTo(pixelWidth * keyFrameIndex, canvas.height);
     context.stroke();
   }
 }
@@ -189,7 +195,8 @@ export function plotPredictions(
     // Highlight the top word.
     const topWord = wordsAndProbs[0][0];
     console.log(
-        `Word recognized: ${topWord} (p = ${wordsAndProbs[0][1].toFixed(6)})`);
+        `"${topWord}" (p=${wordsAndProbs[0][1].toFixed(6)}) @ ` +
+        new Date().toTimeString());
     for (const word in candidateWordSpans) {
       if (word === topWord) {
         candidateWordSpans[word].classList.add('candidate-word-active');

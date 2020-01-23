@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google LLC. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -57,10 +57,18 @@ class FakeAnalyser {
     this.x = 0;
   }
 
-  getFloatFrequencyData(data: Float32Array) {
+  getFloatFrequencyData(data: Float32Array): void {
     const xs: number[] = [];
     for (let i = 0; i < this.fftSize / 2; ++i) {
       xs.push(this.x++);
+    }
+    data.set(new Float32Array(xs));
+  }
+
+  getFloatTimeDomainData(data: Float32Array): void {
+    const xs: number[] = [];
+    for (let i = 0; i < this.fftSize / 2; ++i) {
+      xs.push(-(this.x++));
     }
     data.set(new Float32Array(xs));
   }

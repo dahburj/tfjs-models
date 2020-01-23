@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google LLC. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -17,8 +17,8 @@
 
 // method copied from bGlur in https://codepen.io/zhaojun/pen/zZmRQe
 export function cpuBlur(
-    canvas: HTMLCanvasElement, image: HTMLImageElement|HTMLVideoElement,
-    blur: number) {
+    canvas: HTMLCanvasElement,
+    image: HTMLImageElement|HTMLVideoElement|HTMLCanvasElement, blur: number) {
   const ctx = canvas.getContext('2d');
 
   let sum = 0;

@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google LLC. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -35,7 +35,7 @@ select.onchange = async (event) => {
   const model = await modelPromise;
   model.dispose();
   modelPromise = cocoSsd.load(
-      event.srcElement.options[event.srcElement.selectedIndex].value);
+      {base: event.srcElement.options[event.srcElement.selectedIndex].value});
 };
 
 const image = document.getElementById('image');

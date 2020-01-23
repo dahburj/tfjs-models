@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google Inc. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -15,23 +15,13 @@
  * =============================================================================
  */
 
-import {CheckpointLoader} from './checkpoint_loader';
-import {ConvolutionDefinition, MobileNet, mobileNetArchitectures, MobileNetMultiplier, OutputStride} from './mobilenet';
+import {MobileNet} from './mobilenet';
 import {decodeMultiplePoses} from './multi_pose/decode_multiple_poses';
 import {decodeSinglePose} from './single_pose/decode_single_pose';
 
-export {Checkpoint, checkpoints} from './checkpoints';
 export {partChannels, partIds, partNames, poseChain} from './keypoints';
-export {load, PoseNet} from './posenet_model';
-export {Keypoint, Pose} from './types';
-export {getAdjacentKeyPoints, getBoundingBox, getBoundingBoxPoints, scalePose} from './util';
-export {
-  ConvolutionDefinition,
-  decodeMultiplePoses,
-  decodeSinglePose,
-  MobileNet,
-  mobileNetArchitectures,
-  MobileNetMultiplier,
-  OutputStride
-};
-export {CheckpointLoader};
+export {load, ModelConfig, MultiPersonInferenceConfig, PoseNet, SinglePersonInterfaceConfig} from './posenet_model';
+export {InputResolution, Keypoint, MobileNetMultiplier, Pose, PoseNetOutputStride} from './types';
+export {getAdjacentKeyPoints, getBoundingBox, getBoundingBoxPoints, scaleAndFlipPoses, scalePose} from './util';
+export {version} from './version';
+export {decodeMultiplePoses, decodeSinglePose, MobileNet};

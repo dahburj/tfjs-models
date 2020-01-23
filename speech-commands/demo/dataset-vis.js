@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google Inc. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -18,6 +18,37 @@
 import * as speechCommands from '../src';
 
 import {plotSpectrogram} from './ui';
+
+/** Remove the children of a div that do not have the isFixed attribute. */
+export function removeNonFixedChildrenFromWordDiv(wordDiv) {
+  for (let i = wordDiv.children.length - 1; i >= 0; --i) {
+    if (wordDiv.children[i].getAttribute('isFixed') == null) {
+      wordDiv.removeChild(wordDiv.children[i]);
+    } else {
+      break;
+    }
+  }
+}
+
+/**
+ * Get the relative x-coordinate of a click event in a canvas.
+ *
+ * @param {HTMLCanvasElement} canvasElement The canvas in which the click
+ *   event happened.
+ * @param {Event} event The click event object.
+ * @return {number} The relative x-coordinate: a `number` between 0 and 1.
+ */
+function getCanvasClickRelativeXCoordinate(canvasElement, event) {
+  let x;
+  if (event.pageX) {
+    x = event.pageX;
+  } else {
+    x = event.clientX + document.body.scrollLeft +
+        document.documentElement.scrollLeft;
+  }
+  x -= canvasElement.offsetLeft;
+  return x / canvasElement.width;
+}
 
 /**
  * Dataset visualizer that supports
@@ -46,12 +77,10 @@ export class DatasetViz {
    *   multiplier (the ratio between the length of the example
    *   and the length expected by the model.) Defaults to 1.
    */
-  constructor(transferRecognizer,
-              topLevelContainer,
-              minExamplesPerClass,
-              startTransferLearnButton,
-              downloadAsFileButton,
-              transferDurationMultiplier = 1) {
+  constructor(
+      transferRecognizer, topLevelContainer, minExamplesPerClass,
+      startTransferLearnButton, downloadAsFileButton,
+      transferDurationMultiplier = 1) {
     this.transferRecognizer = transferRecognizer;
     this.container = topLevelContainer;
     this.minExamplesPerClass = minExamplesPerClass;
@@ -82,15 +111,16 @@ export class DatasetViz {
    * @param {SpectrogramData} spectrogram Optional spectrogram data.
    *   If provided, will use it as is. If not provided, will use WebAudio
    *   to collect an example.
+   * @param {RawAudio} rawAudio Raw audio waveform. Optional
    * @param {string} uid UID of the example being drawn. Must match the UID
    *   of the example from `this.transferRecognizer`.
    */
-  async drawExample(wordDiv, word, spectrogram, uid) {
+  async drawExample(wordDiv, word, spectrogram, rawAudio, uid) {
     if (uid == null) {
       throw new Error('Error: UID is not provided for pre-existing example.');
     }
 
-    this.removeDisplayedExample_(wordDiv);
+    removeNonFixedChildrenFromWordDiv(wordDiv);
 
     // Create the left and right nav buttons.
     const leftButton = document.createElement('button');
@@ -130,6 +160,23 @@ export class DatasetViz {
     exampleCanvas.height = 60;
     exampleCanvas.width = 80;
     exampleCanvas.style['padding'] = '3px';
+
+    // Set up the click callback for the spectrogram canvas. When clicked,
+    // the keyFrameIndex will be set.
+    if (word !== speechCommands.BACKGROUND_NOISE_TAG) {
+      exampleCanvas.addEventListener('click', event => {
+        const relativeX =
+            getCanvasClickRelativeXCoordinate(exampleCanvas, event);
+        const numFrames = spectrogram.data.length / spectrogram.frameSize;
+        const keyFrameIndex = Math.floor(numFrames * relativeX);
+        console.log(
+            `relativeX=${relativeX}; ` +
+            `changed keyFrameIndex to ${keyFrameIndex}`);
+        this.transferRecognizer.setExampleKeyFrameIndex(uid, keyFrameIndex);
+        this.redraw(word, uid);
+      });
+    }
+
     wordDiv.appendChild(exampleCanvas);
 
     const modelNumFrames = this.transferRecognizer.modelInputShape()[1];
@@ -137,10 +184,22 @@ export class DatasetViz {
         exampleCanvas, spectrogram.data, spectrogram.frameSize,
         spectrogram.frameSize, {
           pixelsPerFrame: exampleCanvas.width / modelNumFrames,
-          markMaxIntensityFrame:
-              this.transferDurationMultiplier > 1 &&
-                  word !== speechCommands.BACKGROUND_NOISE_TAG
+          maxPixelWidth: Math.round(0.4 * window.innerWidth),
+          markKeyFrame: this.transferDurationMultiplier > 1 &&
+              word !== speechCommands.BACKGROUND_NOISE_TAG,
+          keyFrameIndex: spectrogram.keyFrameIndex
         });
+
+    if (rawAudio != null) {
+      const playButton = document.createElement('button');
+      playButton.textContent = '▶️';
+      playButton.addEventListener('click', () => {
+        playButton.disabled = true;
+        speechCommands.utils.playRawAudio(
+            rawAudio, () => playButton.disabled = false);
+      });
+      wordDiv.appendChild(playButton);
+    }
 
     // Create Delete button.
     const deleteButton = document.createElement('button');
@@ -156,13 +215,6 @@ export class DatasetViz {
     });
 
     this.updateButtons_();
-  }
-
-  removeDisplayedExample_(wordDiv) {
-    // Preserve the first element, which is the button.
-    while (wordDiv.children.length > 1) {
-      wordDiv.removeChild(wordDiv.children[wordDiv.children.length - 1]);
-    }
   }
 
   /**
@@ -188,7 +240,8 @@ export class DatasetViz {
     }
     const wordDiv = this.container.children[divIndex];
     const exampleCounts = this.transferRecognizer.isDatasetEmpty() ?
-        {} : this.transferRecognizer.countExamples();
+        {} :
+        this.transferRecognizer.countExamples();
 
     if (word in exampleCounts) {
       const examples = this.transferRecognizer.getExamples(word);
@@ -207,9 +260,10 @@ export class DatasetViz {
       }
 
       const spectrogram = example.example.spectrogram;
-      await this.drawExample(wordDiv, word, spectrogram, example.uid);
+      await this.drawExample(
+          wordDiv, word, spectrogram, example.example.rawAudio, example.uid);
     } else {
-      this.removeDisplayedExample_(wordDiv);
+      removeNonFixedChildrenFromWordDiv(wordDiv);
     }
 
     this.updateButtons_();
@@ -229,16 +283,18 @@ export class DatasetViz {
   /** Update the button states according to the state of transferRecognizer. */
   updateButtons_() {
     const exampleCounts = this.transferRecognizer.isDatasetEmpty() ?
-        {} : this.transferRecognizer.countExamples();
+        {} :
+        this.transferRecognizer.countExamples();
     const minCountByClass =
-        this.words_().map(word => exampleCounts[word] || 0)
+        this.words_()
+            .map(word => exampleCounts[word] || 0)
             .reduce((prev, current) => current < prev ? current : prev);
 
     for (const element of this.container.children) {
       const word = element.getAttribute('word');
       const button = element.children[0];
-      const displayWord = word ===
-        speechCommands.BACKGROUND_NOISE_TAG ? 'noise' : word;
+      const displayWord =
+          word === speechCommands.BACKGROUND_NOISE_TAG ? 'noise' : word;
       const exampleCount = exampleCounts[word] || 0;
       if (exampleCount === 0) {
         button.textContent = `${displayWord} (${exampleCount})`;
@@ -259,6 +315,7 @@ export class DatasetViz {
       this.startTransferLearnButton.disabled = true;
     }
 
-    this.downloadAsFileButton.disabled = this.transferRecognizer.isDatasetEmpty();
+    this.downloadAsFileButton.disabled =
+        this.transferRecognizer.isDatasetEmpty();
   }
 }

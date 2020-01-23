@@ -1,6 +1,6 @@
 /**
  * @license
- * Copyright 2018 Google Inc. All Rights Reserved.
+ * Copyright 2019 Google LLC. All Rights Reserved.
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
@@ -18,7 +18,7 @@
 import '@tensorflow/tfjs-node';
 
 import * as tf from '@tensorflow/tfjs';
-import {describeWithFlags} from '@tensorflow/tfjs-core/dist/jasmine_util';
+import {describeWithFlags, NODE_ENVS} from '@tensorflow/tfjs-core/dist/jasmine_util';
 import {writeFileSync} from 'fs';
 import {join} from 'path';
 import * as rimraf from 'rimraf';
@@ -27,9 +27,10 @@ import * as tempfile from 'tempfile';
 import {BrowserFftSpeechCommandRecognizer, deleteSavedTransferModel, getMajorAndMinorVersion, listSavedTransferModels, localStorageWrapper, SAVED_MODEL_METADATA_KEY} from './browser_fft_recognizer';
 import * as BrowserFftUtils from './browser_fft_utils';
 import {FakeAudioContext, FakeAudioMediaStream} from './browser_test_utils';
-import {arrayBuffer2SerializedExamples} from './dataset';
+import {arrayBuffer2SerializedExamples, BACKGROUND_NOISE_TAG} from './dataset';
 import {create} from './index';
 import {SpeechCommandRecognizerResult} from './types';
+import {version} from './version';
 
 describe('getMajorAndMinorVersion', () => {
   it('Correct results', () => {
@@ -41,7 +42,7 @@ describe('getMajorAndMinorVersion', () => {
   });
 });
 
-describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
+describeWithFlags('Browser FFT recognizer', NODE_ENVS, () => {
   const fakeWords: string[] = [
     '_background_noise_', 'down', 'eight', 'five', 'four', 'go', 'left', 'nine',
     'one', 'right', 'seven', 'six', 'stop', 'three', 'two', 'up', 'zero'
@@ -59,19 +60,27 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     const words =
         backgroundAndNoiseOnly ? fakeWordsNoiseAndUnknownOnly : fakeWords;
     const numWords = words.length;
-    tfLoadModelSpy = spyOn(tf, 'loadModel').and.callFake((url: string) => {
-      if (model == null) {
-        model = tf.sequential();
-        model.add(tf.layers.flatten(
-            {inputShape: [fakeNumFrames, fakeColumnTruncateLength, 1]}));
-        secondLastBaseDenseLayer =
-            tf.layers.dense({units: 4, activation: 'relu'});
-        model.add(secondLastBaseDenseLayer);
-        model.add(tf.layers.dense(
-            {units: numWords, useBias: false, activation: 'softmax'}));
-      }
-      return model;
-    });
+    tfLoadModelSpy =
+        spyOn(tf, 'loadLayersModel').and.callFake((url: string) => {
+          if (model == null) {
+            model = tf.sequential();
+            model.add(tf.layers.flatten(
+                {inputShape: [fakeNumFrames, fakeColumnTruncateLength, 1]}));
+            secondLastBaseDenseLayer = tf.layers.dense({
+              units: 4,
+              activation: 'relu',
+              kernelInitializer: 'leCunNormal'
+            });
+            model.add(secondLastBaseDenseLayer);
+            model.add(tf.layers.dense({
+              units: numWords,
+              useBias: false,
+              kernelInitializer: 'leCunNormal',
+              activation: 'softmax'
+            }));
+          }
+          return model;
+        });
     spyOn(BrowserFftUtils, 'loadMetadataJson')
         .and.callFake(async (url: string) => {
           return {words};
@@ -96,7 +105,7 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     const recognizer = new BrowserFftSpeechCommandRecognizer();
     await recognizer.ensureModelLoaded();
     expect(recognizer.wordLabels()).toEqual(fakeWords);
-    expect(recognizer.model instanceof tf.Model).toEqual(true);
+    expect(recognizer.model instanceof tf.LayersModel).toEqual(true);
     expect(recognizer.modelInputShape()).toEqual([
       null, fakeNumFrames, fakeColumnTruncateLength, 1
     ]);
@@ -131,6 +140,16 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
   function createFakeMetadataFile(tmpDir: string) {
     // Construct the metadata.json for the fake model.
     const metadata: {} = {
+      wordLabels: ['_background_noise_', '_unknown_', 'foo', 'bar'],
+      frameSize: 232
+    };
+    const metadataPath = join(tmpDir, 'metadata.json');
+    writeFileSync(metadataPath, JSON.stringify(metadata));
+  }
+
+  function createFakeMetadataFileWithLegacyWordsField(tmpDir: string) {
+    // Construct the metadata.json for the fake model.
+    const metadata: {} = {
       words: ['_background_noise_', '_unknown_', 'foo', 'bar'],
       frameSize: 232
     };
@@ -138,11 +157,37 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     writeFileSync(metadataPath, JSON.stringify(metadata));
   }
 
-  it('Constructing recognize using custom URLs', async () => {
+  it('Constructing recognizer: custom URLs', async () => {
     // Construct a fake model
     const tmpDir = tempfile();
     await createFakeModelArtifact(tmpDir);
     createFakeMetadataFile(tmpDir);
+
+    const modelPath = join(tmpDir, 'model.json');
+    const metadataPath = join(tmpDir, 'metadata.json');
+    const modelURL = `file://${modelPath}`;
+    const metadataURL = `file://${metadataPath}`;
+
+    const recognizer =
+        new BrowserFftSpeechCommandRecognizer(null, modelURL, metadataURL);
+    await recognizer.ensureModelLoaded();
+    expect(recognizer.wordLabels()).toEqual([
+      '_background_noise_', '_unknown_', 'foo', 'bar'
+    ]);
+
+    const recogResult = await recognizer.recognize(tf.zeros([2, 43, 232, 1]));
+    expect(recogResult.scores.length).toEqual(2);
+    expect((recogResult.scores[0] as Float32Array).length).toEqual(4);
+    expect((recogResult.scores[1] as Float32Array).length).toEqual(4);
+
+    rimraf(tmpDir, () => {});
+  });
+
+  it('Constructing recognizer: custom URLs, legacy words format', async () => {
+    // Construct a fake model
+    const tmpDir = tempfile();
+    await createFakeModelArtifact(tmpDir);
+    createFakeMetadataFileWithLegacyWordsField(tmpDir);
 
     const modelPath = join(tmpDir, 'model.json');
     const metadataPath = join(tmpDir, 'metadata.json');
@@ -237,6 +282,9 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     const spectrogram =
         tf.zeros([numExamples, fakeNumFrames, fakeColumnTruncateLength, 1]);
     const recognizer = new BrowserFftSpeechCommandRecognizer();
+    // Warm-up recognize call, for subsequent memory-leak check.
+    await recognizer.recognize(spectrogram, {includeEmbedding: true});
+    const numTensors0 = tf.memory().numTensors;  // For memory-leak check.
     const output =
         await recognizer.recognize(spectrogram, {includeEmbedding: true});
     expect(Array.isArray(output.scores)).toEqual(true);
@@ -246,6 +294,9 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     }
     expect(output.embedding.rank).toEqual(2);
     expect(output.embedding.shape[0]).toEqual(numExamples);
+    tf.dispose(output.embedding);
+    // Assert no memory leak.
+    expect(tf.memory().numTensors).toEqual(numTensors0);
   });
 
   it('Offline recognize fails due to incorrect shape', async () => {
@@ -450,7 +501,7 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
             callbackTimestamps[callbackTimestamps.length - 2];
         expect(
             timeBetweenCallbacks > 0.5 * spectroDurationMillis &&
-            timeBetweenCallbacks < 0.7 * spectroDurationMillis)
+            timeBetweenCallbacks < 0.8 * spectroDurationMillis)
             .toBe(true);
       }
 
@@ -598,6 +649,164 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
       expect(output.spectrogram.data.length)
           .toEqual(fakeColumnTruncateLength * fakeNumFrames);
     }
+  });
+
+  it('collectExample with durationSec', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const params = transfer.params();
+    // Double the length of the spectrogram.
+    const durationSec = params.spectrogramDurationMillis * 2 / 1e3;
+    const spectrogram = await transfer.collectExample('foo', {durationSec});
+    expect(spectrogram.data.length / fakeColumnTruncateLength / fakeNumFrames)
+        .toEqual(2);
+    const example = transfer.getExamples('foo')[0];
+    expect(example.example.rawAudio).toBeUndefined();
+  });
+
+  it('collectExample with 0 durationSec errors', async done => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 0;
+    try {
+      await transfer.collectExample('foo', {durationSec});
+      done.fail('Failed to catch expected error');
+    } catch (err) {
+      expect(err.message).toMatch(/Expected durationSec to be > 0/);
+      done();
+    }
+  });
+
+  it('collectExample: durationMultiplier&durationSec errors', async done => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1;
+    const durationMultiplier = 2;
+    try {
+      await transfer.collectExample('foo', {durationSec, durationMultiplier});
+      done.fail('Failed to catch expected error');
+    } catch (err) {
+      expect(err.message).toMatch(/are mutually exclusive/);
+      done();
+    }
+  });
+
+  it('collectExample with onSnippet', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1;
+    const snippetDurationSec = 0.1;
+    const snippetLengths: number[] = [];
+    const finalSpectrogram = await transfer.collectExample('foo', {
+      durationSec,
+      snippetDurationSec,
+      onSnippet: async spectrogram => {
+        snippetLengths.push(spectrogram.data.length);
+      }
+    });
+    expect(snippetLengths.length).toEqual(11);
+    expect(snippetLengths[0]).toEqual(927);
+    // First audio sample is zero and should have been skipped.
+    for (let i = 1; i < snippetLengths.length; ++i) {
+      expect(snippetLengths[i]).toEqual(928);
+    }
+    expect(finalSpectrogram.data.length)
+        .toEqual(snippetLengths.reduce((x, prev) => x + prev));
+    expect(finalSpectrogram.data.length).toEqual(10208 - 1);
+  });
+
+  it('collectExample w/ invalid durationSec leads to error', async done => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1;
+    const snippetDurationSec = 0;
+    try {
+      await transfer.collectExample('foo', {durationSec, snippetDurationSec});
+      done.fail();
+    } catch (error) {
+      expect(error.message).toMatch(/snippetDurationSec is expected to be > 0/);
+      done();
+    }
+  });
+
+  it('collectExample w/ onSnippet w/o snippetDurationSec error', async done => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1;
+    try {
+      await transfer.collectExample(
+          'foo', {durationSec, onSnippet: async spectrogram => {}});
+      done.fail();
+    } catch (error) {
+      expect(error.message)
+          .toMatch(/snippetDurationSec must be provided if onSnippet/);
+      done();
+    }
+  });
+
+  it('collectExample w/ snippetDurationSec w/o callback errors', async done => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1;
+    const snippetDurationSec = 0.1;
+    try {
+      await transfer.collectExample('foo', {durationSec, snippetDurationSec});
+      done.fail();
+    } catch (error) {
+      expect(error.message)
+          .toMatch(/onSnippet must be provided if snippetDurationSec/);
+      done();
+    }
+  });
+
+  it('collectExample: includeRawAudio, no snippets', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1.5;
+    const includeRawAudio = true;
+    await transfer.collectExample('foo', {durationSec, includeRawAudio});
+    const examples = transfer.getExamples('foo');
+    expect(examples.length).toEqual(1);
+    expect(examples[0].example.rawAudio.sampleRateHz).toEqual(44100);
+    expect(examples[0].example.rawAudio.data.length / (durationSec * 44100))
+        .toBeCloseTo(1, 1e-3);
+  });
+
+  it('collectExample: includeRawAudio, with snippets', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    const durationSec = 1.5;
+    const snippetDurationSec = 0.1;
+    const includeRawAudio = true;
+    await transfer.collectExample('foo', {
+      durationSec,
+      includeRawAudio,
+      snippetDurationSec,
+      onSnippet: async spectrogram => {}
+    });
+    const examples = transfer.getExamples('foo');
+    expect(examples.length).toEqual(1);
+    expect(examples[0].example.rawAudio.sampleRateHz).toEqual(44100);
+    expect(examples[0].example.rawAudio.data.length / (durationSec * 44100))
+        .toBeCloseTo(1, 1e-3);
   });
 
   it('collectTransferLearningExample default transfer model', async () => {
@@ -787,15 +996,10 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     expect(base.isListening()).toEqual(true);
 
     const transfer = base.createTransfer('xfer1');
-    let caughtError: Error;
-    try {
-      await transfer.collectExample('foo');
-    } catch (err) {
-      caughtError = err;
-    }
-    expect(caughtError.message)
-        .toMatch(/Cannot start collection of transfer-learning example/);
-    expect(base.isListening()).toEqual(true);
+    // Concurrent with the ongoing listening (started by the listen() call
+    // above).
+    const example = await transfer.collectExample('foo');
+    expect(example.frameSize).toEqual(232);
 
     await base.stopListening();
     expect(base.isListening()).toEqual(false);
@@ -832,8 +1036,9 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     // tslint:disable-next-line:no-any
     const transferHead = (transfer as any).transferHead as tf.Sequential;
     const numLayers = transferHead.layers.length;
-    const oldTransferKernel =
-        transferHead.getLayer(null, numLayers - 1).getWeights()[0].dataSync();
+    const oldTransferWeightValues = transferHead.getLayer(null, numLayers - 1)
+                                        .getWeights()
+                                        .map(weight => weight.dataSync());
 
     const history =
         await transfer.train({optimizer: tf.train.sgd(1)}) as tf.History;
@@ -849,19 +1054,21 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
 
     // Verify that the weights of the dense layer in the base model doesn't
     // change, i.e., is frozen.
-    const newTransferKernel =
-        transferHead.getLayer(null, numLayers - 1).getWeights()[0].dataSync();
+    const newTransferWeightValues = transferHead.getLayer(null, numLayers - 1)
+                                        .getWeights()
+                                        .map(weight => weight.dataSync());
     baseModelOldWeightValues.forEach((oldWeight, i) => {
       tf.test_util.expectArraysClose(baseModelNewWeightValues[i], oldWeight);
     });
     // Verify that the weight of the transfer-learning head model changes
     // after training.
-    expect(tf.tensor1d(newTransferKernel)
-               .sub(tf.tensor1d(oldTransferKernel))
-               .abs()
-               .max()
-               .dataSync()[0])
-        .toBeGreaterThan(1e-3);
+    const maxWeightChanges = newTransferWeightValues.map(
+        (newValues, i) => tf.tensor1d(newValues)
+                              .sub(tf.tensor1d(oldTransferWeightValues[i]))
+                              .abs()
+                              .max()
+                              .dataSync()[0]);
+    expect(Math.max(...maxWeightChanges)).toBeGreaterThan(1e-3);
 
     // Test recognize() with the transfer recognizer.
     const spectrogram =
@@ -907,15 +1114,64 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     });
   });
 
-  it('trainTransferLearningModel with validationSplit', async done => {
+  it('trainTransferLearningModel w/ mixing-noise augmentation', async () => {
     setUpFakes();
     const base = new BrowserFftSpeechCommandRecognizer();
     await base.ensureModelLoaded();
     const transfer = base.createTransfer('xfer1');
+    await transfer.collectExample('foo');
     for (let i = 0; i < 2; ++i) {
-      await transfer.collectExample('foo');
-      await transfer.collectExample('bar');
+      await transfer.collectExample(BACKGROUND_NOISE_TAG);
     }
+    const history =
+        await transfer.train(
+            {epochs: 10, batchSize: 2, augmentByMixingNoiseRatio: 0.5}) as
+        tf.History;
+    expect(history.history.loss.length).toEqual(10);
+    expect(history.history.acc.length).toEqual(10);
+
+    expect(base.wordLabels()).toEqual(fakeWords);
+    expect(transfer.wordLabels()).toEqual([BACKGROUND_NOISE_TAG, 'foo']);
+  });
+
+  it('train and evaluate', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    await transfer.collectExample('_background_noise_');
+    await transfer.collectExample('bar');
+    await transfer.collectExample('bar');
+    await transfer.train({epochs: 3, batchSize: 2, validationSplit: 0.5});
+
+    const wordProbThresholds = [0, 0.25, 0.5, 0.75, 1];
+    // Burn-in run for evaluate() memory tracking:
+    await transfer.evaluate({windowHopRatio: 0.25, wordProbThresholds});
+    const numTensors0 = tf.memory().numTensors;
+    const {rocCurve, auc} =
+        await transfer.evaluate({windowHopRatio: 0.25, wordProbThresholds});
+    // Assert no memory leak.
+    expect(tf.memory().numTensors).toEqual(numTensors0);
+    expect(rocCurve.length).toEqual(wordProbThresholds.length);
+    for (let i = 0; i < rocCurve.length; ++i) {
+      expect(rocCurve[i].probThreshold).toEqual(wordProbThresholds[i]);
+      expect(rocCurve[i].fpr).toBeGreaterThanOrEqual(0);
+      expect(rocCurve[i].fpr).toBeLessThanOrEqual(1);
+      expect(rocCurve[i].tpr).toBeGreaterThanOrEqual(0);
+      expect(rocCurve[i].tpr).toBeLessThanOrEqual(1);
+    }
+    expect(auc).toBeGreaterThanOrEqual(0);
+    expect(auc).toBeLessThanOrEqual(1);
+  });
+
+  it('train with validationSplit and listen', async done => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    await transfer.collectExample('_background_noise_');
+    await transfer.collectExample('bar');
+    await transfer.collectExample('bar');
     const history =
         await transfer.train({epochs: 3, batchSize: 2, validationSplit: 0.5}) as
         tf.History;
@@ -928,11 +1184,57 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     // transfer-learned model's name should give scores only for the
     // transfer-learned model.
     expect(base.wordLabels()).toEqual(fakeWords);
-    expect(transfer.wordLabels()).toEqual(['bar', 'foo']);
+    expect(transfer.wordLabels()).toEqual(['_background_noise_', 'bar']);
     transfer.listen(async (result: SpeechCommandRecognizerResult) => {
       expect((result.scores as Float32Array).length).toEqual(2);
       transfer.stopListening().then(done);
-    });
+    }, {probabilityThreshold: 0, invokeCallbackOnNoiseAndUnknown: true});
+  });
+
+  it('getMetadata works after transfer learning', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    await transfer.collectExample('_background_noise_');
+    await transfer.collectExample('bar');
+    await transfer.collectExample('bar');
+    await transfer.train({epochs: 1, batchSize: 2, validationSplit: 0.5});
+
+    const metadata = transfer.getMetadata();
+    expect(metadata.tfjsSpeechCommandsVersion).toEqual(version);
+    expect(metadata.modelName).toEqual('xfer1');
+    expect(metadata.timeStamp != null).toEqual(true);
+    expect(metadata.wordLabels).toEqual(['_background_noise_', 'bar']);
+  });
+
+  it('train with tf.data.Dataset, with fine-tuning', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    await transfer.collectExample('_background_noise_');
+    await transfer.collectExample('_background_noise_');
+    await transfer.collectExample('bar');
+    await transfer.collectExample('bar');
+    // Set the duration threshold to 0 to force using tf.data.Dataset
+    // for training.
+    const fitDatasetDurationMillisThreshold = 0;
+    const [history, fineTuneHistory] = await transfer.train({
+      epochs: 3,
+      batchSize: 1,
+      validationSplit: 0.5,
+      fitDatasetDurationMillisThreshold,
+      fineTuningEpochs: 2
+    }) as [tf.History, tf.History];
+    expect(history.history.loss.length).toEqual(3);
+    expect(history.history.acc.length).toEqual(3);
+    expect(history.history.val_loss.length).toEqual(3);
+    expect(history.history.val_acc.length).toEqual(3);
+    expect(fineTuneHistory.history.loss.length).toEqual(2);
+    expect(fineTuneHistory.history.acc.length).toEqual(2);
+    expect(fineTuneHistory.history.val_loss.length).toEqual(2);
+    expect(fineTuneHistory.history.val_acc.length).toEqual(2);
   });
 
   it('trainTransferLearningModel with fine-tuning + callback', async done => {
@@ -992,7 +1294,7 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     const history = await transfer.train({
       epochs: 5,
       callback: {
-        onEpochEnd: async (epoch, logs) => {
+        onEpochEnd: async (epoch: number, logs: tf.Logs) => {
           callbackEpochs.push(epoch);
         }
       }
@@ -1091,7 +1393,35 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
         .toEqual(fakeNumFrames * fakeColumnTruncateLength * 4 * 3);
   });
 
-  it('removeExample & isDatasetEmpty', async() => {
+  it('serializeExamples: limited word labels', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer = base.createTransfer('xfer1');
+    await transfer.collectExample('bar');
+    await transfer.collectExample('foo');
+    await transfer.collectExample('bar');
+    const artifacts =
+        arrayBuffer2SerializedExamples(transfer.serializeExamples('bar'));
+
+    // The examples are sorted alphabetically by their label.
+    expect(artifacts.manifest).toEqual([
+      {
+        label: 'bar',
+        spectrogramNumFrames: fakeNumFrames,
+        spectrogramFrameSize: fakeColumnTruncateLength
+      },
+      {
+        label: 'bar',
+        spectrogramNumFrames: fakeNumFrames,
+        spectrogramFrameSize: fakeColumnTruncateLength
+      }
+    ]);
+    expect(artifacts.data.byteLength)
+        .toEqual(fakeNumFrames * fakeColumnTruncateLength * 4 * 2);
+  });
+
+  it('removeExample & isDatasetEmpty', async () => {
     setUpFakes();
     const base = new BrowserFftSpeechCommandRecognizer();
     await base.ensureModelLoaded();
@@ -1104,8 +1434,8 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     transfer.removeExample(fooExamples[0].uid);
     expect(transfer.isDatasetEmpty()).toEqual(false);
     expect(transfer.countExamples()).toEqual({'bar': 2});
-    expect(() => transfer.getExamples('foo')).toThrowError(
-        'No example of label "foo" exists in dataset');
+    expect(() => transfer.getExamples('foo'))
+        .toThrowError('No example of label "foo" exists in dataset');
     const barExamples = transfer.getExamples('bar');
     transfer.removeExample(barExamples[0].uid);
     expect(transfer.isDatasetEmpty()).toEqual(false);
@@ -1165,6 +1495,22 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     transfer2.loadExamples(transfer1.serializeExamples(), true);
 
     expect(transfer2.countExamples()).toEqual({'bar': 1, 'foo': 1});
+  });
+
+  it('loadExapmles, from a word-filtered dataset', async () => {
+    setUpFakes();
+    const base = new BrowserFftSpeechCommandRecognizer();
+    await base.ensureModelLoaded();
+    const transfer1 = base.createTransfer('xfer1');
+    await transfer1.collectExample('foo');
+    await transfer1.collectExample('bar');
+    const serialized = transfer1.serializeExamples('foo');
+    const transfer2 = base.createTransfer('xfer2');
+    transfer2.loadExamples(serialized);
+    expect(transfer2.countExamples()).toEqual({'foo': 1});
+    const examples = transfer2.getExamples('foo');
+    expect(examples.length).toEqual(1);
+    expect(examples[0].example.label).toEqual('foo');
   });
 
   it('collectExample with durationMultiplier = 1.5', async () => {
@@ -1249,8 +1595,8 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     // Load the transfer model back.
     const base2 = new BrowserFftSpeechCommandRecognizer();
     await base2.ensureModelLoaded();
-    // Disable the spy on tf.loadModel() first, so the subsequent
-    // tf.loadModel() call during the load() call can use the fake
+    // Disable the spy on tf.loadLayersModel() first, so the subsequent
+    // tf.loadLayersModel() call during the load() call can use the fake
     // IndexedDB handler created above.
     tfLoadModelSpy.and.callThrough();
     const transfer2 = base2.createTransfer('xfer1');
@@ -1275,11 +1621,12 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
     const tempSavePath = tempfile();
     await transfer.save(`file://${tempSavePath}`);
 
-    // Disable the spy on tf.loadModel() first, so the subsequent
-    // tf.loadModel() call during the load() call can use the fake
+    // Disable the spy on tf.loadLayersModel() first, so the subsequent
+    // tf.loadLayersModel() call during the load() call can use the fake
     // IndexedDB handler created above.
     tfLoadModelSpy.and.callThrough();
-    const modelPrime = await tf.loadModel(`file://${tempSavePath}/model.json`);
+    const modelPrime =
+        await tf.loadLayersModel(`file://${tempSavePath}/model.json`);
     expect(modelPrime.outputs.length).toEqual(1);
     expect(modelPrime.outputs[0].shape).toEqual([null, 2]);
 
@@ -1314,5 +1661,4 @@ describeWithFlags('Browser FFT recognizer', tf.test_util.NODE_ENVS, () => {
       'tfjs-speech-commands-saved-model-metadata': '{}'
     });
   });
-
 });
